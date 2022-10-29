@@ -5,7 +5,7 @@ let g:autoloaded_copilot_agent = 1
 
 scriptencoding utf-8
 
-let s:plugin_version = '1.5.3'
+let s:plugin_version = '1.6.0'
 
 let s:error_exit = -1
 
@@ -385,14 +385,18 @@ function! s:Command() abort
       return [v:null, node_version, 'Node.js version 12.x–17.x required but found ' . node_version]
     endif
   endif
-  let agent = s:root . '/copilot/dist/agent.js'
-  if !filereadable(agent)
-    let agent = get(g:, 'copilot_agent_command', '')
+  let agent = get(g:, 'copilot_agent_command', '')
+  if empty(agent) || !filereadable(agent)
+    let agent = s:root . '/copilot/dist/agent.js'
     if !filereadable(agent)
       return [v:null, node_version, 'Could not find agent.js (bad install?)']
     endif
   endif
   return [node + [agent], node_version, '']
+endfunction
+
+function! s:UrlDecode(str) abort
+  return substitute(a:str, '%\(\x\x\)', '\=iconv(nr2char("0x".submatch(1)), "utf-8", "latin1")', 'g')
 endfunction
 
 function! copilot#agent#EditorInfo() abort
@@ -403,14 +407,28 @@ function! copilot#agent#EditorInfo() abort
       let s:editor_version = (v:version / 100) . '.' . (v:version % 100) . (exists('v:versionlong') ? printf('.%04d', v:versionlong % 1000) : '')
     endif
   endif
-  return {
+  let info = {
         \ 'editorInfo': {'name': has('nvim') ? 'Neovim': 'Vim', 'version': s:editor_version},
         \ 'editorPluginInfo': {'name': 'copilot.vim', 'version': s:plugin_version}}
+  if type(get(g:, 'copilot_proxy')) == v:t_string
+    let proxy = g:copilot_proxy
+  else
+    let proxy = ''
+  endif
+  let match = matchlist(proxy, '\C^\%([^:]\+://\)\=\%(\([^/:#]\+@\)\)\=\%(\([^/:#]\+\)\|\[\([[:xdigit:]:]\+\)\]\)\%(:\(\d\+\)\)\=\%(/\|$\)')
+  if !empty(match)
+    let info.networkProxy = {'host': match[2] . match[3], 'port': empty(match[4]) ? 80 : +match[4]}
+    if !empty(match[1])
+      let info.networkProxy.username = s:UrlDecode(matchstr(match[1], '^[^:]*'))
+      let info.networkProxy.password = s:UrlDecode(matchstr(match[1], ':\zs.*'))
+    endif
+  endif
+  return info
 endfunction
 
 function! s:GetCapabilitiesResult(result, agent) abort
   let a:agent.capabilities = get(a:result, 'capabilities', {})
-  call a:agent.Request('setEditorInfo', copilot#agent#EditorInfo())
+  call a:agent.Request('setEditorInfo', extend({'editorConfiguration': a:agent.editorConfiguration}, copilot#agent#EditorInfo()))
 endfunction
 
 function! s:GetCapabilitiesError(error, agent) abort
@@ -438,6 +456,7 @@ function! copilot#agent#New(...) abort
   let instance = {'requests': {},
         \ 'methods': get(opts, 'methods', {}),
         \ 'notifications': get(opts, 'notifications', {}),
+        \ 'editorConfiguration': get(opts, 'editorConfiguration', {}),
         \ 'Close': function('s:AgentClose'),
         \ 'Notify': function('s:AgentNotify'),
         \ 'Request': function('s:AgentRequest'),
